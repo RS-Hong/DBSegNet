@@ -2,7 +2,7 @@
 This network is used to interpret thermal landslides on the Qinghai Tibet Plateau
 
 
-DBSegNet：<img src=".\Images\DBSegNet.png"> 
+DBSegNet：<img src=".\Images\预测结果.png"> 
 
 
 Required environment
@@ -11,6 +11,9 @@ numpy==1.26.0
 pillow==11.1.0
 
 File Download
-The RTS dataset we have built can be downloaded from Baidu Netdisk
-link: https://pan.baidu.com/s/1fCAosIFFZg2UH8TaP7XcOA?pwd=k667 extraction code: k667 
+The RTS dataset we have built can be downloaded from Baidu Netdisk  
+link:  
+https://pan.baidu.com/s/1fCAosIFFZg2UH8TaP7XcOA?pwd=k667   
+extraction code: 
+k667 
 
