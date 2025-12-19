@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 # from nets.segformer import SegFormer
 from nets.DBSegNet import DBSegNet
-from nets.Ablation_experiment_new import DBSegNet
+from nets.Ablation_experiment import DBSegNet
 from nets.segformer_training import (get_lr_scheduler, set_optimizer_lr,
                                      weights_init)
 from utils.callbacks import EvalCallback, LossHistory

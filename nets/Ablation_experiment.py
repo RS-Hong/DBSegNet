@@ -7,7 +7,6 @@ import torch.nn.functional as F
 
 """
 DBSetNet 改进版v2 (CvT + MobileNetV2 双分支, 增强双向Cross-Attn + 聚合融合 + Transformer warmup)
-修复：TRStage cnn_skip 通道投影，解决 size mismatch 报错
 """
 
 # --------------------- Utils ---------------------
@@ -328,28 +327,6 @@ PHI = {
         'drop_path': 0.1,
         'use_ca': (False, False, True, False),
         'sr_kv': (0, 0, 2, 0),
-    },
-    'cvmv_tiny_strong': {
-        'dims': (64, 128, 256, 512),
-        'depths_cnn': (1, 2, 2, 2),
-        'depths_tr': (1, 2, 2, 2),
-        'heads': (1, 2, 4, 8),
-        'sr': (8, 4, 2, 1),
-        'decoder_dim': 320,
-        'drop_path': 0.1,
-        'use_ca': (False, True, True, True),
-        'sr_kv': (0, 1, 2, 2),
-    },
-    'cvmv_small_strong': {
-        'dims': (64, 128, 320, 512),
-        'depths_cnn': (2, 2, 3, 2),
-        'depths_tr': (2, 2, 3, 2),
-        'heads': (1, 2, 5, 8),
-        'sr': (8, 4, 2, 1),
-        'decoder_dim': 384,
-        'drop_path': 0.1,
-        'use_ca': (False, True, True, True),
-        'sr_kv': (0, 1, 2, 2),
     },
 }
 
