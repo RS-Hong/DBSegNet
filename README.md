@@ -2,6 +2,9 @@
 This network is used to interpret thermal landslides on the Qinghai Tibet Plateau
 
 
+DBSegNet：<img src=".\Images\DBSegNet.png"> 
+
+
 Required environment
 torch==2.1.0
 numpy==1.26.0
