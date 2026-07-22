@@ -3,7 +3,7 @@ __pycache__/
 .idea/
 logs/
 checkpoints/
+data/
 *.pth
 *.pt
 .temp_miou_out/
-
