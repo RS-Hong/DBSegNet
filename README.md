@@ -80,12 +80,11 @@ background and `1` (or any positive value for binary conversion) for RTS.
 
 ### Dataset Download
 
-The dataset and optional checkpoints will be released through Baidu Netdisk:
+The RTS dataset is available through Baidu Netdisk:
 
-```text
-Baidu Netdisk: [LINK TO BE ADDED]
-Extraction code: [CODE TO BE ADDED]
-```
+- File: `RTS_DATASET.zip`
+- Download: [Baidu Netdisk](https://pan.baidu.com/s/1mMndL-bk0h7b0UsmTe1jAQ)
+- Extraction code: `9pd9`
 
 ## Training
 
