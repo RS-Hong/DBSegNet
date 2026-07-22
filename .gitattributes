@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Keep model implementation encrypted in Git; local unlocked worktrees stay plaintext.
+nets/** filter=git-crypt diff=git-crypt
+.gitattributes !filter !diff
