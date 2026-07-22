@@ -23,15 +23,6 @@ and a bidirectional multi-scale decoder.
   <img src="img/定性图.png" width="900" alt="DBSegNet qualitative results">
 </p>
 
-## Highlights
-
-- Dual CNN-Transformer encoder for local detail and long-range context.
-- Cross-branch residual exchange at multiple feature stages.
-- Learnable dense complementary feature gating (LGF).
-- Bidirectional cross-attention at Stage 3.
-- Top-down and bottom-up multi-scale feature decoding.
-- Reproducible training and inference configuration.
-
 ## Repository Structure
 
 ```text
