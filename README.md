@@ -36,8 +36,7 @@ DBSegNet/
 |   `-- DBSegNet_legacy.py   # Legacy implementation retained for reference
 |-- training/                # Training loop, optimizer and checkpoint helpers
 |-- utils/                   # Data loading, metrics, callbacks and losses
-|-- splits/                  # Optional split files (no imagery)
-`-- verify_reproduction.py   # Protocol and checkpoint consistency audit
+`-- splits/                  # Optional split files (no imagery)
 ```
 
 Datasets, checkpoints, logs, and prediction outputs are intentionally kept
@@ -131,19 +130,6 @@ python predict.py \
 The output is an 8-bit binary mask. The current lightweight inference entry
 point resizes one image to the configured input size; large georeferenced
 rasters should be processed with an external tiled-inference workflow.
-
-## Reproducibility
-
-Run the audit utility before reproducing an archived experiment:
-
-```bash
-python verify_reproduction.py
-```
-
-The utility checks model/checkpoint compatibility, the forward fingerprint,
-critical training components, and train/validation split hashes. Exact metrics
-also depend on using the same imagery, masks, split files, CUDA stack, and
-random seed.
 
 ## Citation
 
