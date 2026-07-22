@@ -158,7 +158,7 @@ def resize_img(self, img, scale, keep_ratio, interpolation='bilinear', backend='
 
 
 class SegmentationDataset(Dataset):
-    def __init__(self, annotation_lines, input_shape, num_classes, train, dataset_path):
+    def __init__(self, annotation_lines, input_shape, num_classes, train, dataset_path, aug_mode="default", dataset_type="voc", hrgldd_channels=(0, 1, 2), small_target_strategy=False, small_target_max_pixels=512, small_target_crop_probability=0.70, small_target_scale_range=(1.25, 2.0)):
         super(SegmentationDataset, self).__init__()
         self.annotation_lines   = annotation_lines
         self.length             = len(annotation_lines)
@@ -166,6 +166,19 @@ class SegmentationDataset(Dataset):
         self.num_classes        = num_classes
         self.train              = train
         self.dataset_path       = dataset_path
+        self.aug_mode           = aug_mode.lower()
+        self.dataset_type       = dataset_type.lower()
+        self.hrgldd_channels    = tuple(hrgldd_channels)
+        self.small_target_strategy = bool(small_target_strategy)
+        self.small_target_max_pixels = int(small_target_max_pixels)
+        self.small_target_crop_probability = float(small_target_crop_probability)
+        self.small_target_scale_range = tuple(float(value) for value in small_target_scale_range)
+        self._hrgldd_cache      = {}
+        self._cas_mask_cache    = {}
+        if self.aug_mode not in ("default", "weak", "planet_mild", "resize_only", "direct_resize"):
+            raise ValueError("aug_mode must be 'default', 'weak', 'planet_mild', 'resize_only' or 'direct_resize'.")
+        if self.dataset_type not in ("voc", "bijie", "cas", "hrgldd"):
+            raise ValueError("dataset_type must be 'voc', 'bijie', 'cas' or 'hrgldd'.")
 
     def __len__(self):
         return self.length
@@ -175,30 +188,41 @@ class SegmentationDataset(Dataset):
         annotation_line = self.annotation_lines[index]
         # name            = annotation_line.split()[0]
         name = annotation_line.strip()
+        if self.dataset_type == "hrgldd":
+            return self.get_hrgldd_data(name)
 
         #-------------------------------#
         #   从文件中读取图像
         #-------------------------------#
-        jpg         = Image.open(os.path.join(os.path.join(self.dataset_path, "VOC2007/JPEGImages"), name + ".tif"))
-        png         = Image.open(os.path.join(os.path.join(self.dataset_path, "VOC2007/SegmentationClass"), name + ".tif"))
+        jpg, png = self.load_image_mask(name)
+        if self.num_classes == 2:
+            png = Image.fromarray((np.asarray(png) > 0).astype(np.uint8))
         #-------------------------------#
         #   数据增强
         #-------------------------------#
         # jpg, png    = self.get_random_data(jpg, png, self.input_shape, random = self.train)
 
-        jpg_aug, png_aug    = self.get_random_data(jpg, png, self.input_shape, random = self.train)
-
-        # 计算原始和增强后前景像素数量
-        original_fg_count = np.sum(np.array(png) == 1)
-        aug_fg_count = np.sum(np.array(png_aug) == 1)
-
-        # 如果增强后前景像素比例低于50%，禁用增强
-        if self.train and original_fg_count > 0 and aug_fg_count < 0.7 * original_fg_count:
+        if self.train and self.aug_mode == "default":
+            jpg_aug, png_aug = self.get_random_data(jpg, png, self.input_shape, random=True)
+            original_fg_count = np.sum(np.array(png) == 1)
+            aug_fg_count = np.sum(np.array(png_aug) == 1)
+            if original_fg_count > 0 and aug_fg_count < 0.7 * original_fg_count:
+                jpg_aug, png_aug = self.get_random_data(jpg, png, self.input_shape, random=False)
+        elif self.train and self.aug_mode == "weak":
+            jpg_aug, png_aug = self.get_weak_data(jpg, png, self.input_shape)
+        elif self.train and self.aug_mode == "planet_mild":
+            jpg_aug, png_aug = self.get_planet_mild_data(jpg, png, self.input_shape)
+        elif self.aug_mode == "direct_resize":
+            jpg_aug, png_aug = self.get_direct_resize_data(jpg, png, self.input_shape)
+        else:
             jpg_aug, png_aug = self.get_random_data(jpg, png, self.input_shape, random=False)
 
         jpg = np.transpose(preprocess_input(np.array(jpg_aug, np.float64)), [2,0,1])
-        png = np.array(png_aug)
-        png[png >= self.num_classes] = self.num_classes
+        png = np.array(png_aug, dtype=np.int64)
+        if self.num_classes == 2 or self.dataset_type in ("bijie", "cas"):
+            png = (png > 0).astype(np.int64)
+        else:
+            png[png >= self.num_classes] = self.num_classes
         #-------------------------------------------------------#
         #   转化成one_hot的形式
         #   在这里需要+1是因为voc数据集有些标签具有白边部分
@@ -211,6 +235,208 @@ class SegmentationDataset(Dataset):
 
     def rand(self, a=0, b=1):
         return np.random.rand() * (b - a) + a
+
+    def get_hrgldd_arrays(self, split):
+        if split not in self._hrgldd_cache:
+            x_path = os.path.join(self.dataset_path, f"{split}X.npy")
+            y_path = os.path.join(self.dataset_path, f"{split}Y.npy")
+            self._hrgldd_cache[split] = (
+                np.load(x_path, mmap_mode="r"),
+                np.load(y_path, mmap_mode="r"),
+            )
+        return self._hrgldd_cache[split]
+
+    def get_hrgldd_data(self, name):
+        split, index = name.replace("\\", "/").split("/", 1)
+        index = int(index)
+        xs, ys = self.get_hrgldd_arrays(split)
+        image = np.array(xs[index][..., self.hrgldd_channels], dtype=np.float32)
+        mask = np.array(ys[index], dtype=np.float32).squeeze()
+
+        h, w = self.input_shape
+        if image.shape[0] != h or image.shape[1] != w:
+            image = cv2.resize(image, (w, h), interpolation=cv2.INTER_LINEAR)
+            mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        if self.train and self.aug_mode == "weak":
+            if self.rand() < 0.5:
+                image = np.flip(image, axis=1)
+                mask = np.flip(mask, axis=1)
+            if self.rand() < 0.5:
+                image = np.flip(image, axis=0)
+                mask = np.flip(mask, axis=0)
+            rotate_k = np.random.randint(0, 4)
+            if rotate_k:
+                image = np.rot90(image, rotate_k, axes=(0, 1))
+                mask = np.rot90(mask, rotate_k, axes=(0, 1))
+
+        image = self.preprocess_hrgldd_image(image)
+        mask = (np.ascontiguousarray(mask) > 0.5).astype(np.int64)
+
+        seg_labels = np.eye(self.num_classes + 1)[mask.reshape([-1])]
+        seg_labels = seg_labels.reshape((int(self.input_shape[0]), int(self.input_shape[1]), self.num_classes + 1))
+        return image, mask, seg_labels
+
+    @staticmethod
+    def preprocess_hrgldd_image(image):
+        image = np.ascontiguousarray(image * 255.0, dtype=np.float32)
+        if image.shape[-1] == 3:
+            image = preprocess_input(image)
+        else:
+            processed = np.empty_like(image, dtype=np.float32)
+            processed[..., :3] = preprocess_input(image[..., :3].copy())
+            processed[..., 3:] = (image[..., 3:] - 127.5) / 58.0
+            image = processed
+        return np.transpose(image, [2, 0, 1])
+
+    def load_image_mask(self, name):
+        if self.dataset_type == "cas":
+            subdataset, filename = name.replace("\\", "/").split("/", 1)
+            image_path = os.path.join(self.dataset_path, subdataset, "img", filename)
+            mask_dir = os.path.join(self.dataset_path, subdataset, "mask")
+            mask_path = os.path.join(mask_dir, filename)
+            if not os.path.exists(mask_path):
+                if subdataset not in self._cas_mask_cache:
+                    self._cas_mask_cache[subdataset] = {
+                        f.lower(): f for f in os.listdir(mask_dir)
+                        if os.path.isfile(os.path.join(mask_dir, f))
+                    }
+                mask_name = self._cas_mask_cache[subdataset].get(filename.lower())
+                if mask_name is None:
+                    raise FileNotFoundError(mask_path)
+                mask_path = os.path.join(mask_dir, mask_name)
+            return Image.open(image_path), Image.open(mask_path)
+
+        if self.dataset_type == "bijie":
+            subset, filename = name.replace("\\", "/").split("/", 1)
+            if subset == "landslide":
+                image_path = os.path.join(self.dataset_path, "landslide", "image", filename)
+                mask_path = os.path.join(self.dataset_path, "landslide", "mask", filename)
+                image = Image.open(image_path)
+                mask = Image.open(mask_path)
+            elif subset == "non-landslide":
+                image_path = os.path.join(self.dataset_path, "non-landslide", "image", filename)
+                image = Image.open(image_path)
+                mask = Image.new("L", image.size, 0)
+            else:
+                raise ValueError(f"Unsupported Bijie subset in line: {name}")
+            return image, mask
+
+        image = Image.open(os.path.join(os.path.join(self.dataset_path, "VOC2007/JPEGImages"), name + ".tif"))
+        mask = Image.open(os.path.join(os.path.join(self.dataset_path, "VOC2007/SegmentationClass"), name + ".tif"))
+        return image, mask
+
+    def get_direct_resize_data(self, image, label, input_shape):
+        image = cvtColor(image)
+        label = Image.fromarray(np.array(label))
+        h, w = input_shape
+
+        image = image.resize((w, h), Image.BICUBIC)
+        label = label.resize((w, h), Image.NEAREST)
+        return image, label
+
+    def get_weak_data(self, image, label, input_shape):
+        image, label = self.get_random_data(image, label, input_shape, random=False)
+
+        if self.rand() < 0.5:
+            image = image.transpose(Image.FLIP_LEFT_RIGHT)
+            label = label.transpose(Image.FLIP_LEFT_RIGHT)
+        if self.rand() < 0.5:
+            image = image.transpose(Image.FLIP_TOP_BOTTOM)
+            label = label.transpose(Image.FLIP_TOP_BOTTOM)
+
+        rotate_k = np.random.randint(0, 4)
+        if rotate_k == 1:
+            image = image.transpose(Image.ROTATE_90)
+            label = label.transpose(Image.ROTATE_90)
+        elif rotate_k == 2:
+            image = image.transpose(Image.ROTATE_180)
+            label = label.transpose(Image.ROTATE_180)
+        elif rotate_k == 3:
+            image = image.transpose(Image.ROTATE_270)
+            label = label.transpose(Image.ROTATE_270)
+        return image, label
+
+    def get_planet_mild_data(self, image, label, input_shape):
+        image, label = self.get_weak_data(image, label, input_shape)
+        foreground_pixels = int(np.count_nonzero(np.asarray(label)))
+        is_small_target = 0 < foreground_pixels <= self.small_target_max_pixels
+        crop_probability = (
+            self.small_target_crop_probability
+            if self.small_target_strategy and is_small_target
+            else (0.25 if is_small_target else 0.50)
+        )
+        scale_range = (
+            self.small_target_scale_range
+            if self.small_target_strategy and is_small_target
+            else (1.0, 1.5)
+        )
+        if self.rand() < crop_probability:
+            image, label = self.get_target_preserving_crop(
+                image, label, input_shape, scale_range=scale_range
+            )
+        if self.rand() >= 0.8:
+            return image, label
+
+        rgb = np.asarray(image, dtype=np.float32) / 255.0
+        contrast = self.rand(0.95, 1.05)
+        gamma = self.rand(0.95, 1.05)
+        channel_gain = np.array([self.rand(0.97, 1.03) for _ in range(3)], dtype=np.float32)
+        rgb = np.clip((rgb - 0.5) * contrast + 0.5, 0.0, 1.0)
+        rgb = np.power(rgb, gamma) * channel_gain
+        rgb = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV).astype(np.float32)
+        hsv[..., 0] = np.mod(hsv[..., 0] + self.rand(-1.0, 1.0), 180.0)
+        hsv[..., 1] = np.clip(hsv[..., 1] * self.rand(0.92, 1.08), 0, 255)
+        hsv[..., 2] = np.clip(hsv[..., 2] * self.rand(0.95, 1.05), 0, 255)
+        image = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+        return Image.fromarray(image), label
+
+    def get_target_preserving_crop(self, image, label, input_shape, max_attempts=10, scale_range=(1.0, 1.5)):
+        """Randomly zoom and crop while retaining useful foreground content."""
+        h, w = input_shape
+        scale = self.rand(*scale_range)
+        scaled_w = max(w, int(round(w * scale)))
+        scaled_h = max(h, int(round(h * scale)))
+        image = image.resize((scaled_w, scaled_h), Image.BICUBIC)
+        label = label.resize((scaled_w, scaled_h), Image.NEAREST)
+        scaled_mask = np.asarray(label)
+        scaled_foreground = int(np.count_nonzero(scaled_mask))
+
+        best_image = None
+        best_label = None
+        best_foreground = -1
+        required_foreground = min(
+            scaled_foreground,
+            max(128, int(np.ceil(0.70 * scaled_foreground))),
+        )
+
+        for _ in range(max_attempts):
+            left = np.random.randint(0, scaled_w - w + 1)
+            top = np.random.randint(0, scaled_h - h + 1)
+            crop_box = (left, top, left + w, top + h)
+            image_crop = image.crop(crop_box)
+            label_crop = label.crop(crop_box)
+            crop_foreground = int(np.count_nonzero(np.asarray(label_crop)))
+            if crop_foreground > best_foreground:
+                best_image = image_crop
+                best_label = label_crop
+                best_foreground = crop_foreground
+            if scaled_foreground == 0 or crop_foreground >= required_foreground:
+                return image_crop, label_crop
+
+        if scaled_foreground > 0 and best_foreground == 0:
+            foreground_y, foreground_x = np.where(scaled_mask > 0)
+            center_x = int(np.median(foreground_x))
+            center_y = int(np.median(foreground_y))
+            left = int(np.clip(center_x - w // 2, 0, scaled_w - w))
+            top = int(np.clip(center_y - h // 2, 0, scaled_h - h))
+            crop_box = (left, top, left + w, top + h)
+            best_image = image.crop(crop_box)
+            best_label = label.crop(crop_box)
+
+        return best_image, best_label
 
     def transform(self, img, label, scale, ratio_range = (0.5, 2.0), keep_ratio = True, crop_ratio = 0.75, flip_ratio = 0.5):
 

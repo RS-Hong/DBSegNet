@@ -6,7 +6,51 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def CE_Loss(inputs, target, cls_weights, num_classes=21):
+def compute_single_loss(pred, pngs, labels, weights, num_classes, dice_loss, focal_loss, dice_weight=1.0, label_smoothing=0.0):
+    if focal_loss:
+        loss = Focal_Loss(pred, pngs, weights, num_classes=num_classes)
+    else:
+        loss = CE_Loss(pred, pngs, weights, num_classes=num_classes, label_smoothing=label_smoothing)
+
+    if dice_loss:
+        main_dice = Dice_loss(pred, labels)
+        loss = loss + dice_weight * main_dice
+
+    return loss
+
+def Boundary_Loss(boundary_logits, target, ignore_index=None, smooth=1e-5):
+    if boundary_logits.size(1) > 1:
+        boundary_logits = boundary_logits[:, 1:2]
+
+    n, c, h, w = boundary_logits.size()
+    nt, ht, wt = target.size()
+    if h != ht or w != wt:
+        boundary_logits = F.interpolate(boundary_logits, size=(ht, wt), mode="bilinear", align_corners=True)
+
+    valid = torch.ones_like(target, dtype=torch.bool)
+    if ignore_index is not None:
+        valid = target != ignore_index
+
+    fg = ((target > 0) & valid).float().unsqueeze(1)
+    boundary = torch.zeros_like(fg)
+    boundary[:, :, :, 1:] = torch.maximum(boundary[:, :, :, 1:], (fg[:, :, :, 1:] - fg[:, :, :, :-1]).abs())
+    boundary[:, :, :, :-1] = torch.maximum(boundary[:, :, :, :-1], (fg[:, :, :, 1:] - fg[:, :, :, :-1]).abs())
+    boundary[:, :, 1:, :] = torch.maximum(boundary[:, :, 1:, :], (fg[:, :, 1:, :] - fg[:, :, :-1, :]).abs())
+    boundary[:, :, :-1, :] = torch.maximum(boundary[:, :, :-1, :], (fg[:, :, 1:, :] - fg[:, :, :-1, :]).abs())
+    boundary = boundary * valid.float().unsqueeze(1)
+
+    pos = boundary.sum()
+    neg = boundary.numel() - pos
+    pos_weight = (neg / (pos + smooth)).clamp(1.0, 20.0).detach()
+    bce = F.binary_cross_entropy_with_logits(boundary_logits, boundary, pos_weight=pos_weight)
+
+    prob = torch.sigmoid(boundary_logits)
+    prob = prob * valid.float().unsqueeze(1)
+    inter = (prob * boundary).sum()
+    dice = 1 - (2 * inter + smooth) / (prob.sum() + boundary.sum() + smooth)
+    return bce + dice
+
+def CE_Loss(inputs, target, cls_weights, num_classes=21, label_smoothing=0.0):
     n, c, h, w = inputs.size()
     nt, ht, wt = target.size()
     if h != ht and w != wt:
@@ -15,7 +59,11 @@ def CE_Loss(inputs, target, cls_weights, num_classes=21):
     temp_inputs = inputs.transpose(1, 2).transpose(2, 3).contiguous().view(-1, c)
     temp_target = target.view(-1)
 
-    CE_loss  = nn.CrossEntropyLoss(weight=cls_weights, ignore_index=num_classes)(temp_inputs, temp_target)
+    CE_loss  = nn.CrossEntropyLoss(
+        weight=cls_weights,
+        ignore_index=num_classes,
+        label_smoothing=label_smoothing,
+    )(temp_inputs, temp_target)
     return CE_loss
 
 def Focal_Loss(inputs, target, cls_weights, num_classes=21, alpha=0.5, gamma=2):
@@ -95,11 +143,18 @@ def get_lr_scheduler(lr_decay_type, lr, min_lr, total_iters, warmup_iters_ratio 
         out_lr  = lr * decay_rate ** n
         return out_lr
 
+    def poly_lr(lr, min_lr, total_iters, power, iters):
+        iters = min(iters, total_iters)
+        factor = pow(1 - iters / float(total_iters), power)
+        return min_lr + (lr - min_lr) * factor
+
     if lr_decay_type == "cos":
         warmup_total_iters  = min(max(warmup_iters_ratio * total_iters, 1), 3)
         warmup_lr_start     = max(warmup_lr_ratio * lr, 1e-6)
         no_aug_iter         = min(max(no_aug_iter_ratio * total_iters, 1), 15)
         func = partial(yolox_warm_cos_lr ,lr, min_lr, total_iters, warmup_total_iters, warmup_lr_start, no_aug_iter)
+    elif lr_decay_type == "poly":
+        func = partial(poly_lr, lr, min_lr, total_iters, 2.0)
     else:
         decay_rate  = (min_lr / lr) ** (1 / (step_num - 1))
         step_size   = total_iters / step_num
@@ -110,4 +165,4 @@ def get_lr_scheduler(lr_decay_type, lr, min_lr, total_iters, warmup_iters_ratio 
 def set_optimizer_lr(optimizer, lr_scheduler_func, epoch):
     lr = lr_scheduler_func(epoch)
     for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+        param_group['lr'] = lr * param_group.get('lr_mult', 1.0)
